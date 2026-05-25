@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# hgui — drive a Wayland GUI app inside an isolated headless sway compositor.
+#
+# Screenshots (grim) and input (virtual pointer + virtual keyboard) target only
+# the sandbox's own WAYLAND_DISPLAY, so the host session — focus, cursor, the
+# workspace you are looking at — is never touched. See README.md for the why.
+#
+# Commands:
+#   hgui start [-r WxH] -- <app> [args...]   launch sandbox + app, wait until ready
+#   hgui shot <file.png>                     screenshot the sandbox
+#   hgui move <x> <y>                        move pointer (absolute, output px)
+#   hgui click [<x> <y>]                     left-click (optionally move first)
+#   hgui scroll <dy>                         vertical wheel (+down / -up)
+#   hgui key <keysym>                        press a key (e.g. Tab, Return, space)
+#   hgui tab [n]                             press Tab n times (default 1)
+#   hgui type <text...>                      type text into the focused field
+#   hgui status                              show display, seat capabilities, pids
+#   hgui stop                                tear the sandbox down
+set -euo pipefail
+
+SELF="$(readlink -f "$0")"
+HARNESS_DIR="$(dirname "$SELF")"
+VP_BIN="$HARNESS_DIR/build/vp"
+TEMPLATE="$HARNESS_DIR/share/sway-headless.conf.template"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/hgui"
+
+die() { echo "hgui: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || die "missing dependency: $1 (run install.sh)"; }
+
+load_env() {
+  [ -f "$STATE/env" ] || die "no running sandbox (use 'hgui start')"
+  IFS='|' read -r WAYLAND_DISPLAY SWAYSOCK < "$STATE/env"
+  export WAYLAND_DISPLAY SWAYSOCK
+}
+fifo_send() { load_env; printf '%s\n' "$*" > "$STATE/fifo"; }
+
+cmd_start() {
+  local res=1280x800
+  while [ "${1:-}" != "--" ] && [ $# -gt 0 ]; do
+    case "$1" in
+      -r|--res) res="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
+  [ "${1:-}" = "--" ] && shift
+  [ $# -gt 0 ] || die "usage: hgui start [-r WxH] -- <app> [args...]"
+  need sway; need grim; need wtype
+  [ -x "$VP_BIN" ] || die "vp driver not built: $VP_BIN (run install.sh)"
+
+  cmd_stop quiet 2>/dev/null || true
+  mkdir -p "$STATE"; rm -f "$STATE/env"
+  [ -p "$STATE/fifo" ] || { rm -f "$STATE/fifo"; mkfifo "$STATE/fifo"; }
+  local w="${res%x*}" h="${res#*x}"
+  echo "$w $h" > "$STATE/meta"
+
+  sed -e "s|@RES@|$res|" -e "s|@ENVFILE@|$STATE/env|" -e "s|@APP@|$*|" \
+      "$TEMPLATE" > "$STATE/sway.conf"
+
+  WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 \
+    setsid -f sway -c "$STATE/sway.conf" > "$STATE/sway.log" 2>&1
+
+  echo -n "hgui: starting sandbox"
+  for _ in $(seq 1 50); do [ -f "$STATE/env" ] && break; echo -n .; sleep 0.2; done
+  echo
+  [ -f "$STATE/env" ] || { cat "$STATE/sway.log" >&2; die "sway/app did not start"; }
+  IFS='|' read -r WAYLAND_DISPLAY SWAYSOCK < "$STATE/env"
+  export WAYLAND_DISPLAY SWAYSOCK
+
+  # Persistent virtual input → seat advertises pointer+keyboard → client binds them.
+  WAYLAND_DISPLAY="$WAYLAND_DISPLAY" setsid -f "$VP_BIN" "$STATE/fifo" "$w" "$h" \
+    > "$STATE/vp.log" 2>&1
+  WAYLAND_DISPLAY="$WAYLAND_DISPLAY" setsid -f wtype -s 999999999 -k F15 -k F15 \
+    > "$STATE/kbd.log" 2>&1
+
+  for _ in $(seq 1 50); do
+    [ "$(seat_caps)" = "3" ] && break; sleep 0.2
+  done
+  echo "hgui: ready — WAYLAND_DISPLAY=$WAYLAND_DISPLAY  seat-caps=$(seat_caps) (3=pointer+keyboard)"
+}
+
+seat_caps() {
+  swaymsg -t get_seats 2>/dev/null \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)[0]['capabilities'])" 2>/dev/null \
+    || echo "?"
+}
+
+cmd_shot()  { load_env; [ $# -ge 1 ] || die "usage: hgui shot <file.png>"; grim "$1"; echo "hgui: wrote $1"; }
+cmd_move()  { [ $# -eq 2 ] || die "usage: hgui move <x> <y>"; fifo_send "move $1 $2"; }
+cmd_scroll(){ [ $# -eq 1 ] || die "usage: hgui scroll <dy>"; fifo_send "scroll $1"; }
+cmd_click() {
+  if [ $# -eq 2 ]; then fifo_send "move $1 $2"; sleep 0.15; fi
+  fifo_send "click"
+}
+cmd_key()   { load_env; [ $# -ge 1 ] || die "usage: hgui key <keysym>"; wtype -k "$1"; }
+cmd_type()  { load_env; [ $# -ge 1 ] || die "usage: hgui type <text...>"; wtype -- "$*"; }
+cmd_tab()   { load_env; local n="${1:-1}"; for _ in $(seq 1 "$n"); do wtype -k Tab; sleep 0.12; done; }
+
+cmd_status() {
+  [ -f "$STATE/env" ] || { echo "hgui: no running sandbox"; return 0; }
+  load_env
+  echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+  echo "SWAYSOCK=$SWAYSOCK"
+  echo "resolution=$(cat "$STATE/meta" 2>/dev/null)"
+  echo "seat-caps=$(seat_caps) (3=pointer+keyboard, 2=keyboard only, 0=none)"
+  pgrep -af "sway -c $STATE/sway.conf|$VP_BIN $STATE/fifo|wtype -s 999999999" | grep -v pgrep || true
+}
+
+cmd_stop() {
+  local quiet="${1:-}"
+  pkill -f "sway -c $STATE/sway.conf" 2>/dev/null || true
+  pkill -f "$VP_BIN $STATE/fifo" 2>/dev/null || true
+  pkill -f "wtype -s 999999999" 2>/dev/null || true
+  rm -rf "$STATE"
+  [ "$quiet" = quiet ] || echo "hgui: sandbox stopped"
+}
+
+case "${1:-}" in
+  start)  shift; cmd_start "$@" ;;
+  shot)   shift; cmd_shot "$@" ;;
+  move)   shift; cmd_move "$@" ;;
+  click)  shift; cmd_click "$@" ;;
+  scroll) shift; cmd_scroll "$@" ;;
+  key)    shift; cmd_key "$@" ;;
+  tab)    shift; cmd_tab "$@" ;;
+  type)   shift; cmd_type "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  stop)   shift; cmd_stop "$@" ;;
+  ""|-h|--help)
+    sed -n '2,21p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (try: hgui --help)" ;;
+esac

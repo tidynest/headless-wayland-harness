@@ -1,0 +1,8 @@
+# Generated per-run by `hgui start` — do not edit copies in the runtime dir.
+# Placeholders @RES@, @ENVFILE@, @APP@ are substituted by hgui.
+output HEADLESS-1 resolution @RES@ position 0 0
+default_border none
+default_floating_border none
+focus_follows_mouse no
+# Record sway's socket details for hgui, then run the app under test fullscreen.
+exec sh -c 'echo "$WAYLAND_DISPLAY|$SWAYSOCK" > "@ENVFILE@"; exec @APP@'
