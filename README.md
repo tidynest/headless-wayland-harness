@@ -8,6 +8,8 @@ you keep using the machine while the app is exercised off-screen.
 
 It works for any native-Wayland app (Slint/winit, GTK, Qt, Electron-on-Wayland, …).
 
+![A terminal on the left runs hgui start, click, type git and shot vault.png, and on the right is the vault.png frame it saved, with CommandVault in the sandbox filtered down to two git commands](docs/screenshot.png)
+
 ---
 
 ## Why this exists (and why the obvious approaches fail)
