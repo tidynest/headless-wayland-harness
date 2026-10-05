@@ -26,7 +26,7 @@ pointer + keyboard capability and the client binds them. Then every screenshot
 and input event lands.
 
 - **Pointer:** `build/vp`, a tiny C program (≈80 lines) that creates one
-  `zwlr_virtual_pointer_v1`, holds it open, and executes `move`/`scroll`/`click`
+  `zwlr_virtual_pointer_v1`, holds it open, and executes `move`/`scroll`/`click`/`down`/`up`
   commands read from a FIFO (opened `O_RDWR` so it never sees EOF).
 - **Keyboard:** a held `wtype -s 999999999 -k F15 -k F15` process (huge
   inter-keystroke delay keeps the virtual keyboard device alive; F15 is inert).
@@ -87,6 +87,11 @@ hgui shot /tmp/frame.png
 hgui move 640 400        # move pointer
 hgui click 1020 26       # move then left-click
 hgui click               # click at current position
+hgui drag 248 400 600 400        # press, move in 10 steps 0.1 s apart, release
+hgui drag 248 400 600 400 30     # same, in 30 steps
+hgui down 248 400        # move then press and hold the left button
+hgui move 300 400        # moves while held are drag motion
+hgui up                  # release (`hgui up X Y` moves first)
 hgui scroll 200          # wheel down (negative = up)
 hgui key Tab             # press a key (Tab, Return, space, Escape, …)
 hgui tab 5               # press Tab 5 times
@@ -112,6 +117,11 @@ coordinates (they map 1:1 to the output, unlike host screen-automation tools).
   a text field before `hgui type`.
 - **Scroll units:** `scroll` values are wheel deltas; ~150–300 per "page" feels
   right for a typical 16px-row grid. Repeat for more.
+- **Dragging:** use `hgui drag`, or `down`, a few `move`s and `up` for a custom
+  path. Toolkits tell a drag from a click by motion arriving while the button
+  is held, so keep about 0.1 s between moves as `drag` does. Sway's own
+  `swaymsg seat - cursor press/set/release` does not work for this, because
+  `cursor set` sends a button release in the middle of the drag.
 - **Coordinates must match the resolution** you started with (the pointer's
   absolute-motion extents are set from `-r`).
 - Logs live in `$XDG_RUNTIME_DIR/hgui/{sway,vp,kbd}.log`; `hgui status` shows the
@@ -134,8 +144,8 @@ headless-wayland-harness/
 ## Limitations
 
 - Single instance; no parallel sandboxes (could be added via a named state dir).
-- Pointer only does left-click + vertical scroll + absolute move (extend `vp.c`
-  for right/middle button, drag, or horizontal scroll).
+- Pointer only does the left button (click, press, release), vertical scroll
+  and absolute move. Extend `vp.c` for right/middle button or horizontal scroll.
 - Keyboard goes through `wtype` (US keymap); exotic layouts may need care.
 - Relies on the wlroots `zwlr_virtual_pointer` + `zwp_virtual_keyboard` protocols
   (sway, wlroots compositors). Not portable to GNOME/mutter as the *sandbox*
@@ -144,7 +154,7 @@ headless-wayland-harness/
 ## Contributing
 
 Issues and pull requests welcome. Good first extensions: right/middle mouse
-buttons and drag in `src/vp.c`, a named state dir for parallel sandboxes, or
+buttons in `src/vp.c`, a named state dir for parallel sandboxes, or
 non-US keymap handling. Keep the dependency footprint small.
 
 Contact: Eric Jingryd <tidynest@proton.me>.

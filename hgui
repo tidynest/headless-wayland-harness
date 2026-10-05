@@ -11,6 +11,9 @@
 #   hgui shot-region <x> <y> <w> <h> <file.png>  screenshot a region (grim -g)
 #   hgui move <x> <y>                        move pointer (absolute, output px)
 #   hgui click [<x> <y>]                     left-click (optionally move first)
+#   hgui down [<x> <y>]                      press and hold the left button
+#   hgui up [<x> <y>]                        release the left button
+#   hgui drag <x1> <y1> <x2> <y2> [steps]    press, move in steps (default 10), release
 #   hgui scroll <dy>                         vertical wheel (+down / -up)
 #   hgui key <keysym>                        press a key (e.g. Tab, Return, space)
 #   hgui tab [n]                             press Tab n times (default 1)
@@ -94,9 +97,30 @@ cmd_shot_region() {
 }
 cmd_move()  { [ $# -eq 2 ] || die "usage: hgui move <x> <y>"; fifo_send "move $1 $2"; }
 cmd_scroll(){ [ $# -eq 1 ] || die "usage: hgui scroll <dy>"; fifo_send "scroll $1"; }
-cmd_click() {
+# Send a button command to vp, moving to <x> <y> first when given.
+button() {
+  local what="$1"; shift
   if [ $# -eq 2 ]; then fifo_send "move $1 $2"; sleep 0.15; fi
-  fifo_send "click"
+  fifo_send "$what"
+}
+cmd_click() { button click "$@"; }
+cmd_down()  { button down "$@"; }
+cmd_up()    { button up "$@"; }
+# Separate move lines about 0.1 s apart with the button held, which toolkits
+# read as a real drag. swaymsg's `seat - cursor set` cannot do this: it sends a
+# button release mid-drag.
+cmd_drag() {
+  [ $# -eq 4 ] || [ $# -eq 5 ] || die "usage: hgui drag <x1> <y1> <x2> <y2> [steps]"
+  local v; for v in "$@"; do [[ "$v" =~ ^-?[0-9]+$ ]] || die "drag: not an integer: $v"; done
+  local x1=$1 y1=$2 x2=$3 y2=$4 n=${5:-10} i
+  [ "$n" -ge 1 ] || die "drag: steps must be at least 1"
+  button down "$x1" "$y1"
+  for ((i = 1; i <= n; i++)); do
+    sleep 0.1
+    fifo_send "move $((x1 + (x2 - x1) * i / n)) $((y1 + (y2 - y1) * i / n))"
+  done
+  sleep 0.1
+  fifo_send "up"
 }
 cmd_key()   { load_env; [ $# -ge 1 ] || die "usage: hgui key <keysym>"; wtype -k "$1"; }
 cmd_type()  { load_env; [ $# -ge 1 ] || die "usage: hgui type <text...>"; wtype -- "$*"; }
@@ -127,6 +151,9 @@ case "${1:-}" in
   shot-region) shift; cmd_shot_region "$@" ;;
   move)   shift; cmd_move "$@" ;;
   click)  shift; cmd_click "$@" ;;
+  down)   shift; cmd_down "$@" ;;
+  up)     shift; cmd_up "$@" ;;
+  drag)   shift; cmd_drag "$@" ;;
   scroll) shift; cmd_scroll "$@" ;;
   key)    shift; cmd_key "$@" ;;
   tab)    shift; cmd_tab "$@" ;;
@@ -134,6 +161,6 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   stop)   shift; cmd_stop "$@" ;;
   ""|-h|--help)
-    sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,/^set -euo/{/^#/s/^# \{0,1\}//p}' "$SELF" ;;
   *) die "unknown command: $1 (try: hgui --help)" ;;
 esac

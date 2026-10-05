@@ -10,6 +10,7 @@
 //   move <x> <y>     absolute motion within the <W>x<H> output
 //   scroll <dy>      vertical wheel (positive = scroll down / content up)
 //   click            left button press + release
+//   down / up        left button press or release alone, so moves in between drag
 //
 // The FIFO is opened O_RDWR so it never reports EOF when a writer disconnects,
 // letting the process block on reads and stay alive indefinitely.
@@ -70,6 +71,9 @@ int main(int argc, char **argv) {
             zwlr_virtual_pointer_v1_axis_source(vp, 0 /* wheel */);
             zwlr_virtual_pointer_v1_axis(vp, t += 10, 0 /* vertical */,
                                          wl_fixed_from_int(a));
+            zwlr_virtual_pointer_v1_frame(vp);
+        } else if (!strncmp(line, "down", 4) || !strncmp(line, "up", 2)) {
+            zwlr_virtual_pointer_v1_button(vp, t += 10, BTN_LEFT, line[0] == 'd');
             zwlr_virtual_pointer_v1_frame(vp);
         } else if (!strncmp(line, "click", 5)) {
             zwlr_virtual_pointer_v1_button(vp, t += 10, BTN_LEFT, 1);
